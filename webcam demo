@@ -1,0 +1,137 @@
+
+#get indoor weights from kornia library as indoor weights link is broken 
+
+
+import torch
+import cv2
+import numpy as np
+import matplotlib.cm as cm
+
+from src.utils.plotting import make_matching_figure
+from src.loftr import LoFTR, default_cfg
+
+
+from utlis import (AverageTimer, VideoStreamer,
+                            make_matching_plot_fast, make_matching_plot, frame2tensor)
+
+# The default config uses dual-softmax.
+# The outdoor and indoor models share the same config.
+# You can change the default values like thr and coarse_match_type.
+image_type = 'indoor'
+matcher = LoFTR(config=default_cfg)
+if image_type == 'indoor':
+  matcher.load_state_dict(torch.load("weights/indoor_ds.ckpt")['state_dict'])
+elif image_type == 'outdoor':
+  matcher.load_state_dict(torch.load("weights/outdoor_ds.ckpt")['state_dict'])
+else:
+  raise ValueError("Wrong image_type is given.")
+matcher = matcher.eval().cuda()
+if torch.cuda.is_available():
+        device = 'cuda' 
+        print("cuda")
+else:
+        raise RuntimeError("GPU is required to run this demo.")
+
+# # Rerun this cell (and below) if a new image pair is uploaded.
+# img0_raw = cv2.imread(image_pair[0], cv2.IMREAD_GRAYSCALE)
+# img1_raw = cv2.imread(image_pair[1], cv2.IMREAD_GRAYSCALE)
+# img0_raw = cv2.resize(img0_raw, (640, 480))
+# img1_raw = cv2.resize(img1_raw, (640, 480))
+
+# img0 = torch.from_numpy(img0_raw)[None][None].cuda() / 255.
+# img1 = torch.from_numpy(img1_raw)[None][None].cuda() / 255.
+# batch = {'image0': img0, 'image1': img1}
+
+# # Inference with LoFTR and get prediction
+# with torch.no_grad():
+#     matcher(batch)
+#     mkpts0 = batch['mkpts0_f'].cpu().numpy()
+#     mkpts1 = batch['mkpts1_f'].cpu().numpy()
+#     mconf = batch['mconf'].cpu().numpy()
+#vs = VideoStreamer()
+#frame, ret = vs.next_frame()
+#assert ret, 'Error when reading the first frame (try different --input?)'
+
+# frame_id = 0  
+# last_image_id = 0
+# frame_tensor = frame2tensor(frame, device)
+# last_data = {'image0': frame_tensor}
+# last_frame = frame
+
+
+# Create a window to display the demo.
+
+window_name = 'LoFTR Matches'
+# cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+# cv2.resizeWindow(window_name, (640*2, 480))
+# cap = cv2.VideoCapture(0)  # 0 corresponds to the default camera, change it if you have multiple cameras
+
+# Initialize webcam
+cap = cv2.VideoCapture(0)  # 0 corresponds to the default camera, change it if you have multiple cameras
+
+# Capture the first frame for img0
+ret, img0_raw = cap.read()
+img0_raw = cv2.cvtColor(img0_raw, cv2.COLOR_BGR2GRAY)
+img0_raw = cv2.resize(img0_raw, (640, 480))
+img0 = torch.from_numpy(img0_raw)[None][None].cuda() / 255.
+
+timer = AverageTimer()
+# vis_range = [opt.bottom_k, opt.top_k]
+frameNo=0
+while True:
+    ret, frame = cap.read()
+    frameNo+=1
+    if not ret:
+        print("Failed to capture frame")
+        break
+
+    # Convert frame to grayscale
+    frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    # Resize the frame
+    frame_resized = cv2.resize(frame_gray, (640, 480))
+    if frameNo==1:
+        frameResized0=frame_resized
+    # Convert to tensor and normalize
+    img1_tensor = torch.from_numpy(frame_resized)[None][None].cuda() / 255.
+    batch={'image0': img0, 'image1': img1_tensor}
+    # Inference with LoFTR and get prediction
+    with torch.no_grad():
+        
+        matcher(batch)
+        # Retrieve results from the 'matcher' output
+        mkpts0 = batch['mkpts0_f'].cpu().numpy()
+        mkpts1 = batch['mkpts1_f'].cpu().numpy()
+        mconf = batch['mconf'].cpu().numpy()
+        print(mkpts0[0],mkpts1[0])
+
+    # Draw matching points on the images
+    color = (0, 255, 0)#cm.jet(mconf, alpha=0.7)
+    #img0_raw = img0_raw.astype(np.uint8)
+    img0_drawn = cv2.drawKeypoints(frameResized0, [cv2.KeyPoint(x, y, 1) for x, y in mkpts0], None, color)
+    #img1_drawn = cv2.drawKeypoints(frame_resized, [cv2.KeyPoint(x, y, 1) for x, y in mkpts1], None, color)
+        # Convert img0_drawn to 2D array
+    img0_drawn = img0_drawn[:, :, 0]
+     # Draw lines between corresponding points
+    for pt0, pt1 in zip(mkpts0, mkpts1):
+        pt0 = tuple(map(int, pt0))
+        pt1 = tuple(map(int, pt1))
+        img0_drawn = img0_drawn.astype(np.uint8)
+        cv2.line(img0_drawn, pt0, (pt1[0] + 640, pt1[1]), color, 1)
+        cv2.line(frame_resized, pt1, (pt0[0] - 640, pt0[1]), color, 1)  # Draw line on img1_drawn
+    # Display the images side by side
+    display_img = np.hstack((img0_drawn, frame_resized))
+    cv2.imshow('Webcam - LoFTR Matches', display_img)
+    # Set img0 to the current frame for the next iteration
+    img0 = img1_tensor
+    frameResized0=frame_resized
+    img0_raw=img0.cpu().numpy()
+        # Display the results
+    #cv2.imshow('Webcam - LoFTR Matches', frame_resized)
+    # Break the loop if 'q' is pressed
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+    
+# Release the webcam and close the OpenCV windows
+cap.release()
+cv2.destroyAllWindows()
